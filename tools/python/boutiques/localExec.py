@@ -7,12 +7,10 @@ class LocalExecutor(object):
   """
   This class represents a json descriptor of a tool, and can execute various tasks related to it.
   It is constructed first via an input json descriptor file, which is held in the desc_dict field.
-
   An input can be added to it via the in_dict field, a dictionary from param ids to values.
   The in_dict field should only be modified via the public readInput method, which can either take
   a file (json or csv) or a string written in the command line. The field is always validated by checking
   the input parameters with respect to the descriptor.
-
   Other public methods include:
     execute - attempts to execute the tool described by the descriptor based on the current input (in in_dict)
     printCmdLine - simply prints the generated command line based on the current input values
@@ -91,7 +89,7 @@ class LocalExecutor(object):
         if self._localExecute("singularity pull shub://" + str(conImage)):
           print("Container not found online - trying local copy")
       else:
-        print('Unrecognized container type: \"%s\"'%conType)
+        print('Unrecognized container type: \"%s\"'%conType) 
         sys.exit(1)
       # Generate command script
       uname, uid = pwd.getpwuid( os.getuid() )[ 0 ], str(os.getuid())
@@ -116,7 +114,7 @@ class LocalExecutor(object):
       if conType == 'docker':
         # export mounts to docker string
         docker_mounts = " -v ".join(m for m in mount_strings)
-        dcmd = 'docker run --entrypoint=/bin/sh --rm' + envString + ' -v '+docker_mounts+ ' -w ' + launchDir + ' ' + str(conImage) + ' ./' + dsname
+        dcmd = 'sudo docker run --entrypoint=/bin/sh --rm' + envString + ' -v '+docker_mounts+ ' -w ' + launchDir + ' ' + str(conImage) + ' ./' + dsname
       elif conType == 'singularity':
         singularity_mounts = " -B ".join(m for m in mount_strings)
         #TODO: Test singularity runtime on cluster
@@ -125,10 +123,11 @@ class LocalExecutor(object):
         print('Unrecognized container type: \"%s\"'%conType)
         sys.exit(1)
       print('Executing via: ' + dcmd)
-      exit_code = self._localExecute( dcmd )
+      (stdout, stderr), exit_code = self._localExecute( dcmd )
     # Otherwise, just run command locally
     else:
-      exit_code = self._localExecute( command )
+      (stdout, stderr), exit_code = self._localExecute( command )
+    if stdout != '': print('Execution output: '+ str(stdout))
     # Report exit status
     print('---/* End program output */---\nCompleted execution (exit code: ' + str(exit_code) + ')')
     time.sleep(0.5) # Give the OS a (half) second to finish writing
@@ -147,7 +146,19 @@ class LocalExecutor(object):
       s2 = '' if exists else 'not '
       err = "Error! " if (not isOptional and not exists) else '' # Add error warning when required file is missing
       print("\t"+err+s1+" output file \'"+outfile['name']+"\' was "+s2+"found at "+ outFileName)
-    return exit_code
+    desc_err = ''
+    if 'error-codes' in list(self.desc_dict.keys()):
+      for err_elem in self.desc_dict['error-codes']:
+         if err_elem['code'] == exit_code:
+            desc_err = err_elem['description']
+            break
+    error_msg = ''
+    if stderr != '':
+        error_msg = 'Execution ERR ({0}): {1}'.format(exit_code, stderr)
+    if desc_err != '':
+        error_msg += '{0}{1} ERR ({2}): {3}'.format('\n' if error_msg != '' else '', self.desc_dict['name'], exit_code, desc_err)
+    
+    return exit_code, stdout, error_msg
 
   # Private method that attempts to locally execute the given command. Returns the exit code.
   def _localExecute(self,command):
@@ -155,6 +166,7 @@ class LocalExecutor(object):
       process = subprocess.Popen(command, shell=True,
                                  stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE)
+
     except OSError as e:
       sys.stderr.write('OS Error during attempted execution!')
       raise e
@@ -162,7 +174,8 @@ class LocalExecutor(object):
       sys.stderr.write( 'Input Value Error during attempted execution!' )
       raise e
     else:
-      return process.wait()
+      return process.communicate(), process.returncode
+
 
   # Private method to generate a random input parameter set that follows the constraints from the json descriptor
   # This method fills in the in_dict field of the object with constrained random values
@@ -324,7 +337,6 @@ class LocalExecutor(object):
     '''
     The readInput method sets the in_dict field of the executor object, based on a fixed input.
     It then generates a command line based on the input.
-
     infile: either the inputs in a file or the command-line string (from -s).
     stringInput: a boolean as to whether the method has been given a string or a file.
     '''
@@ -377,7 +389,7 @@ class LocalExecutor(object):
           if type(val) is list:
             s_val = ""
             for x in val:
-              s_val += x+" "
+              s_val += str(x) + " "
             val = s_val
           else:
               val = str(val)
@@ -544,3 +556,10 @@ class LocalExecutor(object):
       sys.stderr.write("Problems found with prospective input:\n")
       for err in self.errs: sys.stderr.write("\t" + err + "\n")
       sys.exit(1)
+
+  # Return a dictionary mapping output ids to computed output file paths
+  # Require an input file
+  def getOutputFiles(self, inp):
+    self.readInput(inp)
+    self._generateOutputFileNames()
+    return self.out_dict
